@@ -1,8 +1,9 @@
 --[[------------------------------------------------
-Receive notification network message
+Handle notifications for successful redo's
 ------------------------------------------------]]--
 
-net.Receive( "Redo", function( length )
+-- Create the function
+local function Redo( length )
 
 	-- Store the received details about the successful redo
 	local undoName = net.ReadString()
@@ -33,4 +34,7 @@ net.Receive( "Redo", function( length )
 
 	end
 
-end )
+end
+
+-- Register the network message receive
+net.Receive( "Redo", Redo )

@@ -11,21 +11,24 @@ util.AddNetworkString( "Redo" )
 local undoHistory = {}
 
 --[[------------------------------------------------
-Add our hooks
+Create our hook functions
 ------------------------------------------------]]--
 
 -- Called when a player attempts to undo something (this is called even when there's nothing to undo)
-hook.Add( "CanUndo", "trackUndoHistory", function( player, undoTable )
+local function trackUndoHistory( player, undoTable )
 
 	-- Don't continue if this isn't a real entity undo
-	-- TODO: Check for constraint-only undoes too!
+	-- TODO: Check for constraint-only undo's too!
 	if ( undoTable.Entities == nil ) then return end
 
 	-- Table to hold our custom entity structures for this undo
 	local undoEntities = {}
 
 	-- Loop through all entities in the undo
-	for index, entity in ipairs( undoTable.Entities ) do -- IDEA: Is a normal for loop faster than ipairs?
+	for index = 1, #undoTable.Entities do
+	
+		-- Fetch this iteration's entity
+		local entity = undoTable.Entities[ index ]
 
 		-- Store information about the entity in a custom structure
 		-- We need to do this since after this hook, the reference to the entity (undoTable.Entities[ index ]) becomes NULL!
@@ -104,18 +107,25 @@ hook.Add( "CanUndo", "trackUndoHistory", function( player, undoTable )
 
 	} )
 
-end )
+end
 
 -- Runs when a player disconnects
-hook.Add( "PlayerDisconnect", "deleteUndoHistory", function( player )
+local function deleteUndoHistory( player )
 
 	-- Remove all of the player's undo history
 	table.remove( undoHistory, player:UserID() )
 
-end )
+end
 
 -- TODO: Clear all history for every player when admin cleanup is called
 -- TODO: Clear all history for specific player when user cleanup is called
+
+--[[------------------------------------------------
+Register our hooks
+------------------------------------------------]]--
+
+hook.Add( "CanUndo", "trackUndoHistory", trackUndoHistory )
+hook.Add( "PlayerDisconnect", "deleteUndoHistory", deleteUndoHistory )
 
 --[[------------------------------------------------
 Create our functions
@@ -139,7 +149,10 @@ local function redoAction( player, undoHistoryIndex )
 	local redoCustomText = string.gsub( undoCustomText, "Undone ", "Redone ", 1 )
 
 	-- Loop through each custom entity structure that should be redone
-	for index, entityStructure in ipairs( undoEntities ) do -- IDEA: Is a normal for loop faster than ipairs?
+	for index = 1, #undoEntities do
+
+		-- Fetch this iteration's custom entity structure
+		local entityStructure = undoEntities[ index ]
 
 		-- Create the entity
 		local entity = ents.Create( entityStructure.className )
@@ -172,13 +185,15 @@ local function redoAction( player, undoHistoryIndex )
 		entity:PhysicsInit( entityStructure.solidType )
 		entity:SetSolid( entityStructure.solidType ) -- This isn't really needed, since Entity:PhysicsInit() calls this automatically
 		entity:SetSolidFlags( entityStructure.solidFlags ) -- This isn't really needed, since Entity:PhysicsInit() calls this automatically
-		entity:GetPhysicsObject():Wake()
-		entity:GetPhysicsObject():EnableMotion( true )
-		entity:GetPhysicsObject():EnableCollisions( true )
-		entity:GetPhysicsObject():SetVelocity( entityStructure.physicsObject.velocity )
-		entity:GetPhysicsObject():SetMass( entityStructure.physicsObject.mass )
+		
+		local physicsObject = entity:GetPhysicsObject()
+		physicsObject:Wake()
+		physicsObject:EnableMotion( true )
+		physicsObject:EnableCollisions( true )
+		physicsObject:SetVelocity( entityStructure.physicsObject.velocity )
+		physicsObject:SetMass( entityStructure.physicsObject.mass )
 		entity:SetCollisionGroup( entityStructure.collisionGroup )
-		entity:GetPhysicsObject():RecheckCollisionFilter()
+		physicsObject:RecheckCollisionFilter()
 
 		-- Spawn and activate the entity
 		entity:Spawn()
