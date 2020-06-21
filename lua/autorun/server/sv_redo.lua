@@ -1,17 +1,18 @@
--- TODO: Split this script into multiple files in this directory
+-- TODO: Split this script into multiple files in this directory (lua/autorun/server/)
 
 --[[------------------------------------------------
 Setup the script
 ------------------------------------------------]]--
 
--- Add the network message name
-util.AddNetworkString( "Redo" )
+-- Add the network message names
+util.AddNetworkString( "redoNotification" )
+util.AddNetworkString( "onPlayerCleanup" )
 
--- Setup global table to store undo history
+-- Create a table to store everyone's undo history
 local undoHistory = {}
 
 --[[------------------------------------------------
-Create our hook functions
+Create the hook functions
 ------------------------------------------------]]--
 
 -- Called when a player attempts to undo something (this is called even when there's nothing to undo)
@@ -19,9 +20,9 @@ local function trackUndoHistory( player, undoTable )
 
 	-- Don't continue if this isn't a real entity undo
 	-- TODO: Check for constraint-only undo's too!
-	if ( undoTable.Entities == nil ) then return end
+	if undoTable.Entities == nil then return end
 
-	-- Table to hold our custom entity structures for this undo
+	-- Table to hold the custom entity structures for this undo
 	local undoEntities = {}
 
 	-- Loop through all entities in the undo
@@ -29,6 +30,12 @@ local function trackUndoHistory( player, undoTable )
 	
 		-- Fetch this iteration's entity
 		local entity = undoTable.Entities[ index ]
+
+		-- Skip if the entity isn't valid
+		if entity == NULL then continue end
+		
+		-- Fetch this entity's physics object
+		local physicsObject = entity:GetPhysicsObject()
 
 		-- Store information about the entity in a custom structure
 		-- We need to do this since after this hook, the reference to the entity (undoTable.Entities[ index ]) becomes NULL!
@@ -38,7 +45,7 @@ local function trackUndoHistory( player, undoTable )
 			className = entity:GetClass(),
 
 			-- Owner
-			owner = ( entity:GetOwner() != NULL and entity:GetOwner() or undoTable.Owner ),
+			owner = undoTable.Owner,
 
 			-- Placement
 			position = entity:GetPos(),
@@ -57,8 +64,9 @@ local function trackUndoHistory( player, undoTable )
 			-- Visual
 			model = entity:GetModel(),
 			skin = entity:GetSkin(),
-			bodygroups = entity:GetBodyGroups(),
+			bodygroups = entity:GetBodyGroups(), -- This probably isn't needed?
 			color = entity:GetColor(),
+			material = entity:GetMaterial(),
 
 			-- Physics
 			collisionGroup = entity:GetCollisionGroup(),
@@ -68,16 +76,19 @@ local function trackUndoHistory( player, undoTable )
 			physicsObject = {
 
 				-- Velocity
-				velocity = entity:GetPhysicsObject():GetVelocity(),
+				velocity = physicsObject:GetVelocity(),
 
 				-- Mass
-				mass = entity:GetPhysicsObject():GetMass()
+				mass = physicsObject:GetMass(),
+
+				-- Frozen
+				motionEnabled = physicsObject:IsMotionEnabled()
 
 			}
 
 		}
-		
-		-- Add this entity to our custom undo structure's entities
+
+		-- Add this entity to the custom undo structure's entities
 		undoEntities[ index ] = entityStructure
 
 	end
@@ -86,7 +97,7 @@ local function trackUndoHistory( player, undoTable )
 	local userID = player:UserID()
 
 	-- Check if the player doesn't have a table in the undo history
-	if ( undoHistory[ userID ] == nil ) then
+	if undoHistory[ userID ] == nil then
 
 		-- Create an empty table for the player in the undo history
 		undoHistory[ userID ] = {}
@@ -117,18 +128,37 @@ local function deleteUndoHistory( player )
 
 end
 
--- TODO: Clear all history for every player when admin cleanup is called
--- TODO: Clear all history for specific player when user cleanup is called
+-- Runs after an admin cleanup
+local function wipeUndoHistory()
+
+	-- Reset the undo history to an empty array
+	undoHistory = {}
+
+end
 
 --[[------------------------------------------------
-Register our hooks
+Create the network message functions
 ------------------------------------------------]]--
 
-hook.Add( "CanUndo", "trackUndoHistory", trackUndoHistory )
-hook.Add( "PlayerDisconnect", "deleteUndoHistory", deleteUndoHistory )
+-- Runs when a player cleans up their props (this also runs when an admin cleanup happens)
+local function onPlayerCleanup( length, player )
+
+	-- Receive the name of the cleanup
+	local name = net.ReadString()
+
+	-- Don't continue if we're not cleaning up everything
+	if name ~= "all" then return end
+
+	-- Store the player's session ID
+	local userID = player:UserID()
+
+	-- Clear the undo history for this player
+	undoHistory[ userID ] = {}
+
+end
 
 --[[------------------------------------------------
-Create our functions
+Create the action functions
 ------------------------------------------------]]--
 
 -- Redo an undo
@@ -142,11 +172,28 @@ local function redoAction( player, undoHistoryIndex )
 
 	-- Easy access to details about this undo
 	local undoName = undoTable.Name
-	local undoCustomText = undoTable.CustomUndoText or ""
+	local undoCustomText = undoTable.CustomUndoText
 	local undoEntities = undoTable.Entities
 
-	-- Replace 'Undone ' with 'Redone ' in the custom undo text only once
-	local redoCustomText = string.gsub( undoCustomText, "Undone ", "Redone ", 1 )
+	-- Begin the creation of the undo for this redo
+	undo.Create( undoName )
+
+	-- Set this undo to the player
+	undo.SetPlayer( player )
+
+	-- The default redo notification text
+	local redoCustomText = "Redone " .. undoName
+
+	-- Do we have valid custom undo text?
+	if undoCustomText ~= nil then
+
+		-- Set the redo custom text to the undo custom text, but with the starting 'Undone ' replaced with 'Redone '
+		redoCustomText = string.gsub( undoCustomText, "Undone ", "Redone ", 1 )
+
+		-- Set the custom undo text
+		undo.SetCustomUndoText( undoCustomText )
+
+	end
 
 	-- Loop through each custom entity structure that should be redone
 	for index = 1, #undoEntities do
@@ -177,36 +224,41 @@ local function redoAction( player, undoHistoryIndex )
 		-- Visual
 		entity:SetModel( entityStructure.model )
 		entity:SetSkin( entityStructure.skin )
-		-- TODO: bodygroups
+		-- TODO: bodygroups -- This probably isn't needed
+		entity:SetColor( entityStructure.color )
+		entity:SetMaterial( entityStructure.material )
 
 		-- Physics
-		-- TODO: Remove things from here that aren't needed
-		entity:SetMoveType( entityStructure.moveType )
-		entity:PhysicsInit( entityStructure.solidType )
-		entity:SetSolid( entityStructure.solidType ) -- This isn't really needed, since Entity:PhysicsInit() calls this automatically
-		entity:SetSolidFlags( entityStructure.solidFlags ) -- This isn't really needed, since Entity:PhysicsInit() calls this automatically
-		
-		local physicsObject = entity:GetPhysicsObject()
-		physicsObject:Wake()
-		physicsObject:EnableMotion( true )
-		physicsObject:EnableCollisions( true )
-		physicsObject:SetVelocity( entityStructure.physicsObject.velocity )
-		physicsObject:SetMass( entityStructure.physicsObject.mass )
+		entity:PhysicsInit( entityStructure.solidType ) -- Initalise the entity's physics object
 		entity:SetCollisionGroup( entityStructure.collisionGroup )
-		physicsObject:RecheckCollisionFilter()
+		entity:SetMoveType( entityStructure.moveType )
+		entity:SetSolid( entityStructure.solidType ) -- This isn't really needed, since Entity:PhysicsInit() calls this automatically - but maybe it has a custom type?
+		entity:SetSolidFlags( entityStructure.solidFlags ) -- This isn't really needed, since Entity:PhysicsInit() calls this automatically - but maybe it has custom flags?
 
 		-- Spawn and activate the entity
 		entity:Spawn()
 		entity:Activate()
 
-		-- TODO: Create the undo entry that matches the original undo
+		local physicsObject = entity:GetPhysicsObject()
+		physicsObject:SetMass( entityStructure.physicsObject.mass )
+		physicsObject:SetVelocity( entityStructure.physicsObject.velocity )
+		physicsObject:EnableMotion( entityStructure.physicsObject.motionEnabled )
+		physicsObject:RecheckCollisionFilter()
+		physicsObject:Wake()
 
-		-- TODO: Add this entity to the cleanup for it's type
+		-- Add this entity to the undo
+		undo.AddEntity( entity )
+
+		-- Add this entity to the player's cleanup for it's type
+		-- TODO: cleanup.Add( player, undoName, entity ) -- undoName is probably wrong for this!
 
 	end
 
+	-- Finish this undo creation
+	undo.Finish()
+
 	-- Start the network message that tells the player about their successful redo
-	net.Start( "Redo" )
+	net.Start( "redoNotification" )
 
 		-- The name of the undo action
 		net.WriteString( undoName )
@@ -226,16 +278,16 @@ end
 local function redoConsoleCommand( player, command, arguments )
 
 	-- Prevent the server from executing this
-	if ( player == nil ) then return end
+	if player == nil then return end
 
 	-- Store the player's session ID
 	local userID = player:UserID()
 
 	-- The player wants to redo a specific history entry
-	if ( command == "gmod_redonum" ) then
+	if command == "gmod_redonum" then
 
 		-- Check if the argument that specifies the index has been provided
-		if ( not ( #arguments == 1 and tonumber( arguments[ 1 ] ) != nil ) ) then
+		if ( not ( #arguments == 1 and tonumber( arguments[ 1 ] ) ~= nil ) ) then
 
 			-- Give them a console message
 			print( "You're using this command wrong! You're supposed to use it like this: gmod_redonum <number>." )
@@ -249,7 +301,7 @@ local function redoConsoleCommand( player, command, arguments )
 		local undoHistoryIndex = tonumber( arguments[ 1 ] )
 
 		-- Check if the player has the requested index in their undo history
-		if ( not ( undoHistory[ userID ] != nil and undoHistory[ userID ][ undoHistoryIndex ] != nil ) ) then
+		if ( not ( undoHistory[ userID ] ~= nil and undoHistory[ userID ][ undoHistoryIndex ] ~= nil ) ) then
 
 			-- Give them a console message
 			print( "Entry " .. undoHistoryIndex .. " doesn't exist in your undo history.\nRemember the history starts at 1 (the oldest undo) and counts up as you undo more things." )
@@ -266,7 +318,7 @@ local function redoConsoleCommand( player, command, arguments )
 	else
 
 		-- Prevent further execution if the player doesn't have anything left to redo
-		if ( not ( undoHistory[ userID ] != nil and table.maxn( undoHistory[ userID ] ) > 0 ) ) then return end
+		if ( not ( undoHistory[ userID ] ~= nil and table.maxn( undoHistory[ userID ] ) > 0 ) ) then return end
 
 		-- Redo it!
 		redoAction( player, table.maxn( undoHistory[ userID ] ) )
@@ -276,7 +328,27 @@ local function redoConsoleCommand( player, command, arguments )
 end
 
 --[[------------------------------------------------
-Add the console commands
+Register the hooks
+------------------------------------------------]]--
+
+-- When a player undoes something
+hook.Add( "CanUndo", "trackUndoHistory", trackUndoHistory ) -- Lmao this isn't even documented on the wiki
+
+-- When a player disconnects
+hook.Add( "PlayerDisconnect", "deleteUndoHistory", deleteUndoHistory )
+
+-- After the map is cleaned up
+hook.Add( "PostCleanupMap", "wipeUndoHistory", wipeUndoHistory )
+
+--[[------------------------------------------------
+Register the network message receiver
+------------------------------------------------]]--
+
+-- When a player cleans up their stuff
+net.Receive( "onPlayerCleanup", onPlayerCleanup )
+
+--[[------------------------------------------------
+Register the console commands
 ------------------------------------------------]]--
 
 --[[ The default undo console commands:
